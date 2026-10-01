@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1f3a5f">
+<title>Escáner de códigos</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;600;800&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#eef1f4; --panel:#ffffff; --ink:#15212e; --muted:#5b6b7c;
+  --line:#d5dce3; --brand:#1f3a5f; --ok:#1d8a52; --warn:#b4471f;
+  --scanline:#ff3b30;
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px);
+  padding-bottom:env(safe-area-inset-bottom,0px);
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#10161d; --panel:#18212b; --ink:#e7edf3; --muted:#93a3b4;
+    --line:#2a3644; --brand:#7fb0ea; --ok:#4cc985; --warn:#f08a5d; color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#10161d; --panel:#18212b; --ink:#e7edf3; --muted:#93a3b4;
+  --line:#2a3644; --brand:#7fb0ea; --ok:#4cc985; --warn:#f08a5d; color-scheme:dark;
+}
+*,*::before,*::after{box-sizing:inherit}
+html{scroll-padding-top:env(safe-area-inset-top,0px);height:100%}
+body{margin:0;height:100%;background:var(--bg);color:var(--ink);
+  font-family:"Archivo",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:16px}
+.app{display:flex;flex-direction:column;height:100%;max-width:640px;margin:0 auto}
+
+/* visor */
+.viewer{position:relative;background:#000;aspect-ratio:4/3;max-height:42vh;width:100%;overflow:hidden;flex:none}
+video{width:100%;height:100%;object-fit:cover;display:block}
+.frame{position:absolute;inset:18% 10%;border:2px solid rgba(255,255,255,.85);border-radius:6px;pointer-events:none}
+.frame::after{content:"";position:absolute;left:4%;right:4%;top:50%;height:2px;background:var(--scanline);box-shadow:0 0 8px var(--scanline)}
+.viewer.idle .frame{display:none}
+.overlay{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;
+  color:#fff;text-align:center;padding:16px;background:#1f3a5f}
+.overlay p{margin:0;max-width:30ch;line-height:1.4;font-size:15px;opacity:.9}
+.flash{position:absolute;inset:0;background:var(--ok);opacity:0;pointer-events:none;transition:opacity .25s}
+.flash.on{opacity:.45;transition:none}
+.last{position:absolute;left:8px;right:8px;bottom:8px;background:rgba(0,0,0,.7);color:#fff;border-radius:6px;
+  padding:6px 10px;font-family:"JetBrains Mono",ui-monospace,monospace;font-size:15px;display:none;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.last.show{display:block}
+
+/* controles */
+.bar{display:flex;gap:8px;padding:10px 12px;background:var(--panel);border-bottom:1px solid var(--line);flex-wrap:wrap}
+button,.btn{font:600 15px/1 "Archivo",system-ui,sans-serif;border:1px solid var(--line);background:var(--panel);color:var(--ink);
+  border-radius:8px;padding:12px 14px;min-height:46px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:6px}
+button:focus-visible,.btn:focus-within,input:focus-visible{outline:3px solid var(--brand);outline-offset:2px}
+.primary{background:var(--brand);color:#fff;border-color:var(--brand)}
+:root[data-theme="dark"] .primary{color:#0d1620}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .primary{color:#0d1620}}
+.overlay .primary{background:#fff;color:#1f3a5f;border-color:#fff;font-size:17px;padding:14px 22px}
+.grow{flex:1}
+.btn input{display:none}
+.manual{display:flex;gap:8px;padding:10px 12px;background:var(--panel);border-bottom:1px solid var(--line)}
+.manual input{flex:1;min-width:0;font:500 16px "JetBrains Mono",ui-monospace,monospace;padding:10px 12px;border:1px solid var(--line);
+  border-radius:8px;background:var(--bg);color:var(--ink)}
+.model{padding:10px 12px;background:var(--panel);border-bottom:1px solid var(--line)}
+.model label{display:block;font-size:14px;font-weight:600;margin-bottom:6px}
+.model .row{display:flex;gap:8px}
+.model input[type=text]{flex:1;min-width:0;font:600 16px "Archivo",system-ui,sans-serif;padding:10px 12px;border:2px solid var(--brand);
+  border-radius:8px;background:var(--bg);color:var(--ink)}
+.model .hint{font-size:13px;color:var(--muted);margin-top:6px;min-height:1.2em}
+.mname{display:block;font-weight:600;font-size:15px;color:var(--brand);background:none;border:none;padding:0;min-height:0;text-align:left;cursor:pointer;font-family:inherit}
+.mname.none{color:var(--muted);font-weight:400;font-style:italic}
+.opts{display:flex;align-items:center;gap:8px;padding:8px 12px;font-size:14px;color:var(--muted);background:var(--panel);border-bottom:1px solid var(--line)}
+.opts label{display:flex;align-items:center;gap:6px}
+.opts input{width:18px;height:18px}
+
+/* lista */
+.head{display:flex;justify-content:space-between;align-items:baseline;padding:12px 14px 6px}
+.head h1{font-size:20px;font-weight:800;margin:0;letter-spacing:-.01em}
+.count{color:var(--muted);font-size:14px}
+.listwrap{flex:1;overflow-y:auto;padding:0 12px 12px}
+ol{list-style:none;margin:0;padding:0;counter-reset:n}
+li{display:grid;grid-template-columns:2.6em 1fr auto;align-items:center;gap:8px;padding:9px 6px;border-bottom:1px solid var(--line);counter-increment:n}
+li::before{content:counter(n);color:var(--muted);font-size:13px;text-align:right}
+li.new{animation:hl 1.2s ease-out}
+@keyframes hl{from{background:color-mix(in srgb,var(--ok) 25%,transparent)}to{background:transparent}}
+.code{font-family:"JetBrains Mono",ui-monospace,monospace;font-size:16px;word-break:break-all}
+.meta{display:block;font-family:"Archivo",sans-serif;font-size:12px;color:var(--muted);margin-top:2px}
+.qty{font-weight:800;color:var(--brand)}
+.del{border:none;background:none;color:var(--muted);min-height:40px;padding:8px 10px;font-size:18px}
+.empty{color:var(--muted);text-align:center;padding:28px 12px;line-height:1.5}
+
+.foot{display:flex;gap:8px;padding:10px 12px calc(10px + env(safe-area-inset-bottom,0px));background:var(--panel);border-top:1px solid var(--line);flex-wrap:wrap}
+.foot button{flex:1 1 30%}
+.danger{color:var(--warn)}
+.toast{position:fixed;left:50%;bottom:calc(84px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--bg);
+  padding:10px 16px;border-radius:8px;font-size:14px;opacity:0;transition:opacity .2s;pointer-events:none;max-width:90vw;text-align:center}
+.toast.show{opacity:1}
+@media (prefers-reduced-motion:reduce){li.new{animation:none}.flash{transition:none}}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="viewer idle" id="viewer">
+    <video id="video" playsinline muted></video>
+    <div class="frame"></div>
+    <div class="flash" id="flash"></div>
+    <div class="last" id="last"></div>
+    <div class="overlay" id="overlay">
+      <button class="primary" id="startBtn">Abrir cámara</button>
+      <p id="overlayMsg">Apunta al código de barras. Cada lectura se agrega al final de la lista.</p>
+    </div>
+  </div>
+
+  <div class="bar">
+    <button id="toggleBtn" class="grow">Pausar</button>
+    <button id="torchBtn" hidden>Linterna</button>
+    <label class="btn">Desde foto<input type="file" id="photo" accept="image/*" capture="environment"></label>
+  </div>
+
+  <div class="model">
+    <label for="modelInput">Modelo para los próximos códigos</label>
+    <div class="row">
+      <input type="text" id="modelInput" placeholder="Ej: Yealink T21P E2" autocomplete="off" enterkeyhint="done">
+      <label class="btn" id="modelPhotoBtn" hidden>Leer de foto<input type="file" id="modelPhoto" accept="image/*" capture="environment"></label>
+      <button type="button" id="modelClear" aria-label="Quitar modelo">✕</button>
+    </div>
+    <div class="hint" id="modelHint">Todo lo que escanees se guardará con este modelo hasta que lo cambies.</div>
+  </div>
+
+  <form class="manual" id="manualForm" autocomplete="off">
+    <input id="manualInput" inputmode="text" placeholder="Escribir código o lector USB/Bluetooth" aria-label="Código manual">
+    <button type="submit">Agregar</button>
+  </form>
+
+  <div class="opts">
+    <label><input type="checkbox" id="group"> Sumar repetidos en una línea</label>
+  </div>
+
+  <div class="head"><h1>Códigos escaneados</h1><span class="count" id="count">0</span></div>
+  <div class="listwrap" id="listwrap">
+    <ol id="list"></ol>
+    <div class="empty" id="empty">Todavía no hay códigos. Abre la cámara y escanea el primero.</div>
+  </div>
+
+  <div class="foot">
+    <button class="primary" id="csvBtn">Guardar CSV</button>
+    <button id="txtBtn">Guardar TXT</button>
+    <button id="copyBtn">Copiar</button>
+    <button class="danger" id="clearBtn">Borrar todo</button>
+  </div>
+</div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+(function(){
+  const $ = id => document.getElementById(id);
+  const video=$('video'), viewer=$('viewer'), overlay=$('overlay'), overlayMsg=$('overlayMsg');
+  const listEl=$('list'), emptyEl=$('empty'), countEl=$('count'), lastEl=$('last'), listwrap=$('listwrap');
+  const KEY='escaner_codigos_v1';
+  let items=[];           // {code, format, qty, time}
+  let stream=null, running=false, paused=false, detector=null, zxReader=null, track=null, torchOn=false;
+  let lastCode='', lastTime=0;
+  const COOLDOWN=2000;
+
+  // ---------- persistencia ----------
+  try{ items=JSON.parse(localStorage.getItem(KEY)||'[]')||[]; }catch(e){ items=[]; }
+  try{ $('group').checked = localStorage.getItem(KEY+'_group')==='1'; }catch(e){}
+  function persist(){ try{ localStorage.setItem(KEY,JSON.stringify(items)); }catch(e){} }
+
+  // ---------- lista ----------
+  function fmtTime(t){ const d=new Date(t); return d.toLocaleDateString('es-CL')+' '+d.toLocaleTimeString('es-CL'); }
+  function render(highlightIdx){
+    listEl.innerHTML='';
+    items.forEach((it,i)=>{
+      const li=document.createElement('li');
+      if(i===highlightIdx) li.className='new';
+      const box=document.createElement('div');
+      const mb=document.createElement('button'); mb.type='button';
+      mb.className='mname'+(it.model?'':' none'); mb.textContent=it.model||'Sin modelo (tocar para poner)';
+      mb.setAttribute('aria-label','Cambiar modelo de '+it.code);
+      mb.onclick=()=>{ const v=prompt('Modelo para '+it.code, it.model||''); if(v!==null){ it.model=v.trim(); persist(); render(); } };
+      const c=document.createElement('span'); c.className='code'; c.textContent=it.code;
+      const m=document.createElement('span'); m.className='meta';
+      m.textContent=(it.format? it.format+' · ':'')+fmtTime(it.time);
+      box.append(mb,c,m);
+      const right=document.createElement('div'); right.style.display='flex'; right.style.alignItems='center';
+      if(it.qty>1){ const q=document.createElement('span'); q.className='qty'; q.textContent='×'+it.qty; right.append(q); }
+      const d=document.createElement('button'); d.className='del'; d.textContent='✕'; d.setAttribute('aria-label','Eliminar '+it.code);
+      d.onclick=()=>{ items.splice(i,1); persist(); render(); };
+      right.append(d);
+      li.append(box,right);
+      listEl.append(li);
+    });
+    const total=items.reduce((s,it)=>s+(it.qty||1),0);
+    countEl.textContent = items.length===total ? total+(total===1?' código':' códigos') : items.length+' distintos · '+total+' en total';
+    emptyEl.style.display = items.length? 'none':'block';
+    const cur=$('modelInput').value.trim();
+    if(cur){ const n=items.filter(it=>(it.model||'')===cur).reduce((s,it)=>s+(it.qty||1),0);
+      $('modelHint').textContent=n+' escaneado'+(n===1?'':'s')+' con «'+cur+'». Cambia el texto para el siguiente modelo.'; }
+    else $('modelHint').textContent='Escribe el modelo antes de escanear y se pegará a cada código.';
+  }
+  function addCode(code, format){
+    code=String(code).trim(); if(!code) return;
+    const now=Date.now();
+    let idx;
+    const model=$('modelInput').value.trim();
+    if($('group').checked){
+      idx=items.findIndex(it=>it.code===code && (it.model||'')===model);
+      if(idx>=0){ items[idx].qty=(items[idx].qty||1)+1; items[idx].time=now; }
+    }
+    if(idx===undefined || idx<0){ items.push({code, model, format:format||'', qty:1, time:now}); idx=items.length-1; }
+    persist(); render(idx);
+    requestAnimationFrame(()=>{ listwrap.scrollTop=listwrap.scrollHeight; });
+    feedback(code);
+  }
+
+  // ---------- feedback ----------
+  let actx=null;
+  function beep(){
+    try{
+      actx = actx || new (window.AudioContext||window.webkitAudioContext)();
+      const o=actx.createOscillator(), g=actx.createGain();
+      o.type='square'; o.frequency.value=1650; g.gain.value=0.08;
+      o.connect(g); g.connect(actx.destination); o.start(); o.stop(actx.currentTime+0.09);
+    }catch(e){}
+  }
+  function feedback(code){
+    beep(); try{ navigator.vibrate && navigator.vibrate(60); }catch(e){}
+    const f=$('flash'); f.classList.add('on'); setTimeout(()=>f.classList.remove('on'),60);
+    lastEl.textContent=code+($('modelInput').value.trim()?'  ·  '+$('modelInput').value.trim():''); lastEl.classList.add('show');
+  }
+  let tt=null;
+  function toast(msg){ const t=$('toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(tt); tt=setTimeout(()=>t.classList.remove('show'),2600); }
+
+  // ---------- lectura ----------
+  const FORMATS=['ean_13','ean_8','upc_a','upc_e','code_128','code_39','code_93','codabar','itf','qr_code','data_matrix','pdf417','aztec'];
+  async function getDetector(){
+    if(detector) return detector;
+    if('BarcodeDetector' in window){
+      try{
+        const sup = await BarcodeDetector.getSupportedFormats();
+        const f = FORMATS.filter(x=>sup.includes(x));
+        if(f.length){ detector=new BarcodeDetector({formats:f}); return detector; }
+      }catch(e){}
+    }
+    return null;
+  }
+  function loadZXing(){
+    return new Promise((res,rej)=>{
+      if(window.ZXing) return res(window.ZXing);
+      const s=document.createElement('script');
+      s.src='https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js';
+      s.onload=()=>window.ZXing?res(window.ZXing):rej(new Error('ZXing'));
+      s.onerror=()=>rej(new Error('ZXing'));
+      document.head.append(s);
+    });
+  }
+  function accept(code, format){
+    const now=Date.now();
+    if(code===lastCode && now-lastTime<COOLDOWN) { lastTime=now; return; }
+    lastCode=code; lastTime=now;
+    addCode(code, format);
+  }
+  function prettyFormat(f){ return String(f||'').toUpperCase().replace(/_/g,'-'); }
+
+  async function loopNative(){
+    if(!running) return;
+    if(!paused && video.readyState>=2){
+      try{
+        const codes=await detector.detect(video);
+        if(codes && codes.length){ const c=codes[0]; accept(c.rawValue, prettyFormat(c.format)); }
+      }catch(e){}
+    }
+    setTimeout(loopNative, 120);
+  }
+
+  async function startCamera(){
+    overlayMsg.textContent='Abriendo cámara…';
+    try{
+      stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'},width:{ideal:1280},height:{ideal:720}},audio:false});
+    }catch(e){
+      if(e && (e.name==='NotAllowedError'||e.name==='SecurityError')){
+        let st=null; try{ st=(await navigator.permissions.query({name:'camera'})).state; }catch(_){}
+        if(st==='denied') showDeniedHelp();
+        else { cameraBlocked=true; overlayMsg.textContent='Aquí no se puede usar la cámara en vivo. Toca el botón para tomar una foto del código, o abre este enlace directamente en Chrome.'; $('startBtn').textContent='Tomar foto del código'; }
+      } else {
+        overlayMsg.textContent='No se encontró una cámara disponible. Usa «Desde foto» o escribe el código.';
+      }
+      return;
+    }
+    video.srcObject=stream; await video.play().catch(()=>{});
+    track=stream.getVideoTracks()[0];
+    try{ const caps=track.getCapabilities&&track.getCapabilities(); if(caps&&caps.torch) $('torchBtn').hidden=false; }catch(e){}
+    running=true; paused=false; viewer.classList.remove('idle'); overlay.style.display='none'; $('toggleBtn').textContent='Pausar';
+    const det=await getDetector();
+    if(det){ loopNative(); return; }
+    try{
+      const ZX=await loadZXing();
+      zxReader=new ZX.BrowserMultiFormatReader();
+      zxReader.decodeFromStream(stream, video, (result)=>{
+        if(result && !paused) accept(result.getText(), prettyFormat(ZX.BarcodeFormat[result.getBarcodeFormat()]));
+      });
+    }catch(e){ toast('Este navegador no puede leer códigos en vivo. Usa «Desde foto».'); }
+  }
+  function stopCamera(){
+    running=false;
+    try{ zxReader && zxReader.reset(); }catch(e){} zxReader=null;
+    if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
+    viewer.classList.add('idle'); overlay.style.display='flex';
+    overlayMsg.textContent='Cámara cerrada. Ábrela de nuevo para seguir escaneando.';
+    $('startBtn').textContent='Abrir cámara'; $('torchBtn').hidden=true;
+  }
+
+  // ---------- permiso de cámara ----------
+  let cameraBlocked=false;
+  function frameAllowsCamera(){
+    try{
+      const pp=document.permissionsPolicy||document.featurePolicy;
+      if(pp && pp.allowsFeature) return pp.allowsFeature('camera');
+    }catch(e){}
+    return true;
+  }
+  function showDeniedHelp(){
+    overlayMsg.textContent='El permiso de cámara está bloqueado. En Chrome toca el ícono a la izquierda de la dirección, entra a Permisos, activa Cámara y vuelve a tocar el botón. Mientras tanto puedes usar «Tomar foto del código».';
+    $('startBtn').textContent='Volver a intentar';
+  }
+  async function checkCameraPermission(){
+    if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !frameAllowsCamera()){
+      cameraBlocked=true;
+      overlayMsg.textContent='Aquí no se puede usar la cámara en vivo. Toca el botón para tomar una foto del código con la cámara del teléfono, o abre este enlace directamente en Chrome.';
+      $('startBtn').textContent='Tomar foto del código';
+      return;
+    }
+    try{
+      const st=await navigator.permissions.query({name:'camera'});
+      const apply=()=>{
+        if(st.state==='denied') showDeniedHelp();
+        else if(st.state==='granted'){ $('startBtn').textContent='Abrir cámara'; overlayMsg.textContent='Permiso concedido. Apunta al código de barras; cada lectura se agrega al final de la lista.'; }
+        else { $('startBtn').textContent='Permitir cámara'; overlayMsg.textContent='Toca el botón y luego «Permitir» cuando el teléfono pregunte por la cámara.'; }
+      };
+      apply(); st.onchange=()=>{ if(!running) apply(); };
+    }catch(e){}
+  }
+  checkCameraPermission();
+
+  $('startBtn').onclick=()=>{
+    beepUnlock();
+    if(cameraBlocked){ $('photo').click(); return; }
+    startCamera();
+  };
+  function beepUnlock(){ try{ actx = actx || new (window.AudioContext||window.webkitAudioContext)(); actx.resume&&actx.resume(); }catch(e){} }
+  $('toggleBtn').onclick=()=>{
+    if(!running){ beepUnlock(); startCamera(); return; }
+    paused=!paused;
+    $('toggleBtn').textContent = paused? 'Reanudar':'Pausar';
+    if(paused) video.pause(); else video.play().catch(()=>{});
+  };
+  $('torchBtn').onclick=async()=>{
+    if(!track) return; torchOn=!torchOn;
+    try{ await track.applyConstraints({advanced:[{torch:torchOn}]}); }catch(e){ toast('La linterna no está disponible.'); }
+  };
+
+  // foto
+  $('photo').onchange=async(ev)=>{
+    const file=ev.target.files&&ev.target.files[0]; ev.target.value=''; if(!file) return;
+    const url=URL.createObjectURL(file);
+    try{
+      const img=new Image(); img.src=url; await img.decode();
+      const det=await getDetector();
+      if(det){
+        const codes=await det.detect(img);
+        if(codes.length){ codes.forEach(c=>addCode(c.rawValue, prettyFormat(c.format))); return; }
+      } else {
+        const ZX=await loadZXing();
+        const r=new ZX.BrowserMultiFormatReader();
+        const res=await r.decodeFromImageElement(img).catch(()=>null);
+        if(res){ addCode(res.getText(), prettyFormat(ZX.BarcodeFormat[res.getBarcodeFormat()])); return; }
+      }
+      toast('No se encontró un código en la foto. Prueba más cerca y con buena luz.');
+    }catch(e){ toast('No se pudo leer la foto.'); }
+    finally{ URL.revokeObjectURL(url); }
+  };
+
+  // ---------- modelo ----------
+  try{ $('modelInput').value=localStorage.getItem(KEY+'_model')||''; }catch(e){}
+  $('modelInput').addEventListener('input',()=>{ try{ localStorage.setItem(KEY+'_model',$('modelInput').value); }catch(e){} render(); });
+  $('modelInput').addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); e.target.blur(); } });
+  $('modelClear').onclick=()=>{ $('modelInput').value=''; try{ localStorage.setItem(KEY+'_model',''); }catch(e){} render(); };
+
+  let sampler=null;
+  if(window.claude && claude.use){
+    claude.use('sample').then(async sm=>{
+      if(!sm) return;
+      const lim=await sm.limits().catch(()=>null);
+      if(lim && lim.images){ sampler=sm; $('modelPhotoBtn').hidden=false; }
+    }).catch(()=>{});
+  }
+  $('modelPhoto').onchange=async(ev)=>{
+    const file=ev.target.files&&ev.target.files[0]; ev.target.value=''; if(!file||!sampler) return;
+    const hint=$('modelHint'); hint.textContent='Leyendo el modelo de la foto…';
+    try{
+      const r=await sampler(
+        'La imagen es una foto de un equipo, su etiqueta o su caja. Identifica la marca y el modelo del equipo tal como aparecen escritos '+
+        '(por ejemplo "Yealink T21P E2"). Responde SOLO con marca y modelo en una línea, sin comillas ni explicación. '+
+        'Si no se ve ningún modelo, responde exactamente: NO_ENCONTRADO',
+        {images:file, modelTier:'quick', cache:false});
+      const t=(r.text||'').split('\n')[0].replace(/^["'«]|["'»]$/g,'').trim();
+      if(!t || /NO_ENCONTRADO/i.test(t)){ toast('No se distinguió un modelo en la foto. Escríbelo a mano.'); render(); return; }
+      $('modelInput').value=t.slice(0,80);
+      try{ localStorage.setItem(KEY+'_model',$('modelInput').value); }catch(e){}
+      render(); toast('Modelo: '+t+'. Revísalo y corrígelo si hace falta.');
+    }catch(e){
+      render();
+      if(e && e.code==='not_granted'){ $('modelPhotoBtn').hidden=true; toast('Sin permiso para leer fotos. Escribe el modelo a mano.'); }
+      else if(e && e.code==='rate_limited') toast('Demasiadas lecturas seguidas. Espera un momento.');
+      else toast('No se pudo leer la foto. Escribe el modelo a mano.');
+    }
+  };
+
+  // manual / lector físico (teclado + Enter)
+  $('manualForm').onsubmit=(e)=>{ e.preventDefault(); const v=$('manualInput').value; if(v.trim()){ addCode(v,'Manual'); $('manualInput').value=''; } };
+  $('group').onchange=()=>{ try{ localStorage.setItem(KEY+'_group',$('group').checked?'1':'0'); }catch(e){} };
+
+  // ---------- exportar ----------
+  function stamp(){ const d=new Date(),p=n=>String(n).padStart(2,'0'); return d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+'_'+p(d.getHours())+p(d.getMinutes()); }
+  function csvEsc(s){ s=String(s); return /[",;\n]/.test(s)? '"'+s.replace(/"/g,'""')+'"' : s; }
+  function buildCSV(){
+    const rows=[['n','codigo','modelo','cantidad','formato','fecha_hora']];
+    items.forEach((it,i)=>rows.push([i+1, it.code, it.model||'', it.qty||1, it.format||'', fmtTime(it.time)]));
+    // Prefijo "=" no: codigos largos se mantienen como texto con tabulador invisible no; se dejan tal cual.
+    return '\ufeff'+rows.map(r=>r.map(csvEsc).join(',')).join('\r\n')+'\r\n';
+  }
+  function buildTXT(){
+    const out=[];
+    items.forEach(it=>{ for(let k=0;k<(it.qty||1);k++) out.push(it.model? it.code+'\t'+it.model : it.code); });
+    return out.join('\n')+'\n';
+  }
+  let downloads=null;
+  if(window.claude && claude.use){ claude.use('downloads').then(d=>{ downloads=d; }).catch(()=>{}); }
+  async function save(name, data){
+    if(!items.length){ toast('La lista está vacía.'); return; }
+    // 1) Compartir como archivo: va primero porque debe ocurrir justo al tocar el botón.
+    //    Desde el menú se puede elegir WhatsApp, Drive, Gmail o «Guardar en Archivos».
+    let shareErr=null;
+    try{
+      const type = name.endsWith('.csv') ? 'text/csv' : 'text/plain';
+      const file = new File([data], name, {type});
+      if(navigator.share && navigator.canShare && navigator.canShare({files:[file]})){
+        await navigator.share({files:[file], title:name});
+        return;
+      }
+    }catch(e){ if(e&&e.name==='AbortError') return; shareErr=e; }
+    // 2) Guardado del visor de Claude (solo miembros de la organización)
+    if(downloads){
+      try{ await downloads.save({filename:name, data}); toast('Guardado en Descargas: '+name); return; }
+      catch(e){
+        if(e&&e.code==='declined'){ toast('Guardado cancelado.'); return; }
+        downloads=null; // no reintentar en esta sesión
+      }
+    }
+    // 3) Fuera de Claude (GitHub Pages, otro hosting): descarga normal del navegador
+    if(!window.claude){
+      try{
+        const url=URL.createObjectURL(new Blob([data],{type:name.endsWith('.csv')?'text/csv':'text/plain'}));
+        const a=document.createElement('a'); a.href=url; a.download=name;
+        document.body.append(a); a.click(); a.remove();
+        setTimeout(()=>URL.revokeObjectURL(url),4000);
+        toast('Descargado en Descargas: '+name); return;
+      }catch(e){}
+    }
+    // 4) Último recurso: copiar
+    await copyText(data, true);
+  }
+  async function copyText(t, fallback){
+    try{
+      await navigator.clipboard.writeText(t);
+      toast(fallback ? 'Aquí no se pueden crear archivos, así que copié la lista. Pégala en WhatsApp o en una nota.' : 'Lista copiada al portapapeles.');
+    }catch(e){ toast(fallback ? 'No se pudo guardar el archivo aquí. Abre el enlace en Chrome e intenta de nuevo.' : 'No se pudo copiar.'); }
+  }
+  $('csvBtn').onclick=()=>save('codigos_'+stamp()+'.csv', buildCSV());
+  $('txtBtn').onclick=()=>save('codigos_'+stamp()+'.txt', buildTXT());
+  $('copyBtn').onclick=()=>{ if(!items.length) return toast('La lista está vacía.'); copyText(buildTXT()); };
+  $('clearBtn').onclick=()=>{
+    if(!items.length) return;
+    if(confirm('¿Borrar los '+items.length+' códigos de la lista?')){ items=[]; persist(); render(); lastEl.classList.remove('show'); toast('Lista borrada.'); }
+  };
+
+  document.addEventListener('visibilitychange',()=>{ if(document.hidden && running) stopCamera(); });
+  render();
+})();
+</script>
+</body>
+</html>
