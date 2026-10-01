@@ -37,9 +37,12 @@ body{margin:0;height:100%;background:var(--bg);color:var(--ink);
 /* visor */
 .viewer{position:relative;background:#000;aspect-ratio:4/3;max-height:42vh;width:100%;overflow:hidden;flex:none}
 video{width:100%;height:100%;object-fit:cover;display:block}
-.frame{position:absolute;inset:18% 10%;border:2px solid rgba(255,255,255,.85);border-radius:6px;pointer-events:none}
+.frame{position:absolute;inset:30% 8%;border:2px solid rgba(255,255,255,.85);border-radius:6px;pointer-events:none}
 .frame::after{content:"";position:absolute;left:4%;right:4%;top:50%;height:2px;background:var(--scanline);box-shadow:0 0 8px var(--scanline)}
 .viewer.idle .frame{display:none}
+.viewer.armed .frame{border-color:var(--scanline);border-width:3px}
+.frame-hint{position:absolute;left:0;right:0;top:calc(30% - 26px);text-align:center;color:#fff;font-size:13px;text-shadow:0 1px 3px #000;pointer-events:none}
+.viewer.idle .frame-hint{display:none}
 .overlay{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;
   color:#fff;text-align:center;padding:16px;background:#1f3a5f}
 .overlay p{margin:0;max-width:30ch;line-height:1.4;font-size:15px;opacity:.9}
@@ -105,7 +108,7 @@ li.new{animation:hl 1.2s ease-out}
 <div class="app">
   <div class="viewer idle" id="viewer">
     <video id="video" playsinline muted></video>
-    <div class="frame"></div>
+    <div class="frame"></div><div class="frame-hint" id="frameHint">Solo se lee lo que está dentro del recuadro</div>
     <div class="flash" id="flash"></div>
     <div class="last" id="last"></div>
     <div class="overlay" id="overlay">
@@ -115,7 +118,9 @@ li.new{animation:hl 1.2s ease-out}
   </div>
 
   <div class="bar">
-    <button id="toggleBtn" class="grow">Pausar</button>
+    <button id="shutterBtn" class="primary grow">Escanear</button>
+    <button id="modeBtn">Modo: al tocar</button>
+    <button id="toggleBtn">Pausar</button>
     <button id="torchBtn" hidden>Linterna</button>
     <label class="btn">Desde foto<input type="file" id="photo" accept="image/*" capture="environment"></label>
   </div>
@@ -136,7 +141,7 @@ li.new{animation:hl 1.2s ease-out}
   </form>
 
   <div class="opts">
-    <label><input type="checkbox" id="group"> Sumar repetidos en una línea</label>
+    <label><input type="checkbox" id="group"> Permitir repetidos (suma la cantidad)</label>
   </div>
 
   <div class="head"><h1>Códigos escaneados</h1><span class="count" id="count">0</span></div>
@@ -161,9 +166,7 @@ li.new{animation:hl 1.2s ease-out}
   const listEl=$('list'), emptyEl=$('empty'), countEl=$('count'), lastEl=$('last'), listwrap=$('listwrap');
   const KEY='escaner_codigos_v1';
   let items=[];           // {code, format, qty, time}
-  let stream=null, running=false, paused=false, detector=null, zxReader=null, track=null, torchOn=false;
-  let lastCode='', lastTime=0;
-  const COOLDOWN=2000;
+  let stream=null, running=false, paused=false, detector=null, track=null, torchOn=false;
 
   // ---------- persistencia ----------
   try{ items=JSON.parse(localStorage.getItem(KEY)||'[]')||[]; }catch(e){ items=[]; }
@@ -207,6 +210,10 @@ li.new{animation:hl 1.2s ease-out}
     const now=Date.now();
     let idx;
     const model=$('modelInput').value.trim();
+    if(!$('group').checked){
+      const dup=items.findIndex(it=>it.code===code);
+      if(dup>=0){ dupFeedback(code, dup); return; }
+    }
     if($('group').checked){
       idx=items.findIndex(it=>it.code===code && (it.model||'')===model);
       if(idx>=0){ items[idx].qty=(items[idx].qty||1)+1; items[idx].time=now; }
@@ -231,6 +238,18 @@ li.new{animation:hl 1.2s ease-out}
     beep(); try{ navigator.vibrate && navigator.vibrate(60); }catch(e){}
     const f=$('flash'); f.classList.add('on'); setTimeout(()=>f.classList.remove('on'),60);
     lastEl.textContent=code+($('modelInput').value.trim()?'  ·  '+$('modelInput').value.trim():''); lastEl.classList.add('show');
+  }
+  function dupFeedback(code, i){
+    try{ navigator.vibrate && navigator.vibrate([40,60,40]); }catch(e){}
+    try{
+      actx = actx || new (window.AudioContext||window.webkitAudioContext)();
+      const o=actx.createOscillator(), g=actx.createGain();
+      o.type='sine'; o.frequency.value=320; g.gain.value=0.12;
+      o.connect(g); g.connect(actx.destination); o.start(); o.stop(actx.currentTime+0.18);
+    }catch(e){}
+    lastEl.textContent='Repetido, no se agregó: '+code; lastEl.classList.add('show');
+    toast('Ese código ya está en la lista (línea '+(i+1)+').');
+    const li=listEl.children[i]; if(li){ li.classList.remove('new'); void li.offsetWidth; li.classList.add('new'); li.scrollIntoView({block:'nearest'}); }
   }
   let tt=null;
   function toast(msg){ const t=$('toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(tt); tt=setTimeout(()=>t.classList.remove('show'),2600); }
@@ -258,23 +277,78 @@ li.new{animation:hl 1.2s ease-out}
       document.head.append(s);
     });
   }
-  function accept(code, format){
-    const now=Date.now();
-    if(code===lastCode && now-lastTime<COOLDOWN) { lastTime=now; return; }
-    lastCode=code; lastTime=now;
-    addCode(code, format);
-  }
   function prettyFormat(f){ return String(f||'').toUpperCase().replace(/_/g,'-'); }
 
-  async function loopNative(){
-    if(!running) return;
-    if(!paused && video.readyState>=2){
-      try{
-        const codes=await detector.detect(video);
-        if(codes && codes.length){ const c=codes[0]; accept(c.rawValue, prettyFormat(c.format)); }
-      }catch(e){}
+  // Recorta solo la zona del recuadro (la imagen usa object-fit: cover)
+  const crop=document.createElement('canvas');
+  const cctx=crop.getContext('2d',{willReadFrequently:true});
+  function grabCenter(){
+    const vw=video.videoWidth, vh=video.videoHeight, ew=video.clientWidth, eh=video.clientHeight;
+    if(!vw||!vh||!ew||!eh) return null;
+    const sc=Math.max(ew/vw, eh/vh), offX=(vw*sc-ew)/2, offY=(vh*sc-eh)/2;
+    const fx=ew*0.08, fy=eh*0.30, fw=ew*0.84, fh=eh*0.40;
+    const sx=(fx+offX)/sc, sy=(fy+offY)/sc, sw=fw/sc, sh=fh/sc;
+    crop.width=Math.max(1,Math.round(sw)); crop.height=Math.max(1,Math.round(sh));
+    cctx.drawImage(video,sx,sy,sw,sh,0,0,crop.width,crop.height);
+    return crop;
+  }
+  let ZXlib=null, zxMulti=null;
+  async function decodeCanvas(cv){
+    if(detector){
+      const r=await detector.detect(cv);
+      return r.length ? {text:r[0].rawValue, format:prettyFormat(r[0].format)} : null;
     }
-    setTimeout(loopNative, 120);
+    if(ZXlib && zxMulti){
+      try{
+        const src=new ZXlib.HTMLCanvasElementLuminanceSource(cv);
+        const res=zxMulti.decode(new ZXlib.BinaryBitmap(new ZXlib.HybridBinarizer(src)));
+        return {text:res.getText(), format:prettyFormat(ZXlib.BarcodeFormat[res.getBarcodeFormat()])};
+      }catch(e){ return null; }
+    }
+    return null;
+  }
+
+  // Modo: 'tap' (al tocar Escanear) o 'auto'
+  let mode='tap';
+  try{ mode=localStorage.getItem(KEY+'_mode')==='auto'?'auto':'tap'; }catch(e){}
+  let armedUntil=0, seenCode='', seenCount=0, lastSeenAt=0, inViewCode='';
+  function applyMode(){
+    $('modeBtn').textContent = mode==='auto' ? 'Modo: automático' : 'Modo: al tocar';
+    $('shutterBtn').hidden = mode==='auto';
+    $('toggleBtn').classList.toggle('grow', mode==='auto');
+    $('frameHint').textContent = mode==='auto' ? 'Lee solo dentro del recuadro, un código a la vez' : 'Centra el código y toca Escanear';
+  }
+  function setArmed(on){
+    viewer.classList.toggle('armed', on);
+    $('shutterBtn').textContent = on ? 'Buscando…' : 'Escanear';
+  }
+  function arm(){
+    if(!running){ beepUnlock(); startCamera(); return; }
+    if(paused){ paused=false; video.play().catch(()=>{}); $('toggleBtn').textContent='Pausar'; }
+    armedUntil=Date.now()+3000; inViewCode=''; seenCode=''; seenCount=0; setArmed(true);
+  }
+  async function loop(){
+    if(!running) return;
+    const now=Date.now();
+    if(!paused && video.readyState>=2 && (mode==='auto' || now<armedUntil)){
+      let r=null; const cv=grabCenter();
+      if(cv){ try{ r=await decodeCanvas(cv); }catch(e){} }
+      const t=Date.now();
+      if(r){
+        if(r.text===seenCode) seenCount++; else { seenCode=r.text; seenCount=1; }
+        lastSeenAt=t;
+        // Debe leerse igual 2 veces seguidas, y no se repite mientras siga en el recuadro
+        if(seenCount>=2 && r.text!==inViewCode){
+          inViewCode=r.text;
+          if(mode==='tap'){ armedUntil=0; setArmed(false); }
+          addCode(r.text, r.format);
+        }
+      } else if(t-lastSeenAt>1200){ inViewCode=''; seenCode=''; seenCount=0; }
+    }
+    if(mode==='tap' && armedUntil && Date.now()>=armedUntil){
+      armedUntil=0; setArmed(false); toast('No se leyó ningún código dentro del recuadro. Acércalo o dale más luz.');
+    }
+    setTimeout(loop, 90);
   }
 
   async function startCamera(){
@@ -296,18 +370,15 @@ li.new{animation:hl 1.2s ease-out}
     try{ const caps=track.getCapabilities&&track.getCapabilities(); if(caps&&caps.torch) $('torchBtn').hidden=false; }catch(e){}
     running=true; paused=false; viewer.classList.remove('idle'); overlay.style.display='none'; $('toggleBtn').textContent='Pausar';
     const det=await getDetector();
-    if(det){ loopNative(); return; }
-    try{
-      const ZX=await loadZXing();
-      zxReader=new ZX.BrowserMultiFormatReader();
-      zxReader.decodeFromStream(stream, video, (result)=>{
-        if(result && !paused) accept(result.getText(), prettyFormat(ZX.BarcodeFormat[result.getBarcodeFormat()]));
-      });
-    }catch(e){ toast('Este navegador no puede leer códigos en vivo. Usa «Desde foto».'); }
+    if(!det){
+      try{ ZXlib=await loadZXing(); zxMulti=new ZXlib.MultiFormatReader(); }
+      catch(e){ toast('Este navegador no puede leer códigos en vivo. Usa «Desde foto».'); }
+    }
+    loop();
   }
   function stopCamera(){
     running=false;
-    try{ zxReader && zxReader.reset(); }catch(e){} zxReader=null;
+    armedUntil=0; setArmed(false);
     if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
     viewer.classList.add('idle'); overlay.style.display='flex';
     overlayMsg.textContent='Cámara cerrada. Ábrela de nuevo para seguir escaneando.';
@@ -352,6 +423,15 @@ li.new{animation:hl 1.2s ease-out}
     startCamera();
   };
   function beepUnlock(){ try{ actx = actx || new (window.AudioContext||window.webkitAudioContext)(); actx.resume&&actx.resume(); }catch(e){} }
+  $('shutterBtn').onclick=arm;
+  viewer.addEventListener('click',e=>{ if(mode==='tap' && running && e.target===video) arm(); });
+  $('modeBtn').onclick=()=>{
+    mode = mode==='auto' ? 'tap' : 'auto';
+    try{ localStorage.setItem(KEY+'_mode',mode); }catch(e){}
+    armedUntil=0; setArmed(false); inViewCode=''; applyMode();
+    toast(mode==='auto' ? 'Automático: lee cada código nuevo que entre al recuadro.' : 'Al tocar: lee un código cada vez que tocas Escanear.');
+  };
+  applyMode();
   $('toggleBtn').onclick=()=>{
     if(!running){ beepUnlock(); startCamera(); return; }
     paused=!paused;
