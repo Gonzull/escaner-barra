@@ -78,6 +78,13 @@ button:focus-visible,.btn:focus-within,input:focus-visible{outline:3px solid var
 .opts{display:flex;align-items:center;gap:8px;padding:8px 12px;font-size:14px;color:var(--muted);background:var(--panel);border-bottom:1px solid var(--line)}
 .opts label{display:flex;align-items:center;gap:6px}
 .opts input{width:18px;height:18px}
+.opts{flex-wrap:wrap}
+details.fmts{width:100%}
+details.fmts summary{cursor:pointer;padding:6px 0;color:var(--ink);font-weight:600}
+.fmtgrid{display:grid;grid-template-columns:1fr 1fr;gap:6px 12px;padding:6px 0 4px}
+.fmtgrid label{font-size:14px;color:var(--ink)}
+.fmtgrid small{color:var(--muted)}
+.fmtnote{font-size:13px;color:var(--muted);margin:4px 0 2px;line-height:1.4}
 
 /* lista */
 .head{display:flex;justify-content:space-between;align-items:baseline;padding:12px 14px 6px}
@@ -142,6 +149,11 @@ li.new{animation:hl 1.2s ease-out}
 
   <div class="opts">
     <label><input type="checkbox" id="group"> Permitir repetidos (suma la cantidad)</label>
+    <details class="fmts">
+      <summary id="fmtSummary">Tipos de código</summary>
+      <div class="fmtgrid" id="fmtGrid"></div>
+      <p class="fmtnote">Los tipos apagados son los que más lecturas erróneas dan (con * + / $). Actívalos solo si algún equipo no se deja leer.</p>
+    </details>
   </div>
 
   <div class="head"><h1>Códigos escaneados</h1><span class="count" id="count">0</span></div>
@@ -255,13 +267,66 @@ li.new{animation:hl 1.2s ease-out}
   function toast(msg){ const t=$('toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(tt); tt=setTimeout(()=>t.classList.remove('show'),2600); }
 
   // ---------- lectura ----------
-  const FORMATS=['ean_13','ean_8','upc_a','upc_e','code_128','code_39','code_93','codabar','itf','qr_code','data_matrix','pdf417','aztec'];
+  const FORMAT_INFO=[
+    ['code_128','Code 128','series, cajas',true],
+    ['ean_13','EAN-13','productos',true],
+    ['ean_8','EAN-8','productos',true],
+    ['upc_a','UPC-A','productos',true],
+    ['upc_e','UPC-E','productos',true],
+    ['qr_code','QR','',true],
+    ['data_matrix','DataMatrix','',true],
+    ['code_39','Code 39','',false],
+    ['code_93','Code 93','',false],
+    ['codabar','Codabar','',false],
+    ['itf','ITF','cajas',false],
+    ['pdf417','PDF417','',false],
+    ['aztec','Aztec','',false]];
+  const FORMATS=FORMAT_INFO.map(f=>f[0]);
+  const normKey=f=>String(f||'').toLowerCase().replace(/[^a-z0-9]/g,'');
+  let allowed=new Set(FORMAT_INFO.filter(f=>f[3]).map(f=>f[0]));
+  try{ const sv=JSON.parse(localStorage.getItem(KEY+'_formats')||'null'); if(Array.isArray(sv)&&sv.length) allowed=new Set(sv); }catch(e){}
+  const allowedKeys=()=>new Set([...allowed].map(normKey));
+  function renderFormats(){
+    const g=$('fmtGrid'); g.innerHTML='';
+    FORMAT_INFO.forEach(([id,label,hint])=>{
+      const l=document.createElement('label'); const cb=document.createElement('input'); cb.type='checkbox'; cb.checked=allowed.has(id);
+      cb.onchange=()=>{
+        if(cb.checked) allowed.add(id); else allowed.delete(id);
+        if(!allowed.size){ allowed.add(id); cb.checked=true; toast('Debe quedar al menos un tipo activo.'); }
+        try{ localStorage.setItem(KEY+'_formats',JSON.stringify([...allowed])); }catch(e){}
+        detector=null; getDetector(); updateFmtSummary();
+      };
+      l.append(cb,' '+label); if(hint){ const sm=document.createElement('small'); sm.textContent=' · '+hint; l.append(sm); }
+      g.append(l);
+    });
+    updateFmtSummary();
+  }
+  function updateFmtSummary(){ $('fmtSummary').textContent='Tipos de código ('+allowed.size+' activos)'; }
+
+  function eanOk(d){
+    let sum=0; const n=d.length;
+    for(let i=0;i<n-1;i++){ sum+= (+d[n-2-i])*(i%2===0?3:1); }
+    return (10-sum%10)%10===+d[n-1];
+  }
+  // Limpia y valida una lectura. Devuelve {text, format, key} o null.
+  function checkRead(raw, rawFormat){
+    const key=normKey(rawFormat);
+    if(key && !allowedKeys().has(key)) return null;
+    let t=String(raw==null?'':raw).replace(/[\x00-\x1F\x7F]/g,'').trim().replace(/^\*+|\*+$/g,'').trim();
+    if(t.length<3) return null;
+    if(!/[A-Za-z0-9]/.test(t)) return null;
+    const len={ean13:13,ean8:8,upca:12}[key];
+    if(len){ if(!/^\d+$/.test(t) || t.length!==len || !eanOk(t)) return null; }
+    if(key==='upce' && !/^\d{6,8}$/.test(t)) return null;
+    return {text:t, format:prettyFormat(rawFormat), key};
+  }
+  const WEAK=new Set(['code39','code93','codabar','itf']);
   async function getDetector(){
     if(detector) return detector;
     if('BarcodeDetector' in window){
       try{
         const sup = await BarcodeDetector.getSupportedFormats();
-        const f = FORMATS.filter(x=>sup.includes(x));
+        const f = FORMATS.filter(x=>sup.includes(x) && allowed.has(x));
         if(f.length){ detector=new BarcodeDetector({formats:f}); return detector; }
       }catch(e){}
     }
@@ -296,13 +361,14 @@ li.new{animation:hl 1.2s ease-out}
   async function decodeCanvas(cv){
     if(detector){
       const r=await detector.detect(cv);
-      return r.length ? {text:r[0].rawValue, format:prettyFormat(r[0].format)} : null;
+      for(const c of r){ const ok=checkRead(c.rawValue, c.format); if(ok) return ok; }
+      return null;
     }
     if(ZXlib && zxMulti){
       try{
         const src=new ZXlib.HTMLCanvasElementLuminanceSource(cv);
         const res=zxMulti.decode(new ZXlib.BinaryBitmap(new ZXlib.HybridBinarizer(src)));
-        return {text:res.getText(), format:prettyFormat(ZXlib.BarcodeFormat[res.getBarcodeFormat()])};
+        return checkRead(res.getText(), ZXlib.BarcodeFormat[res.getBarcodeFormat()]);
       }catch(e){ return null; }
     }
     return null;
@@ -338,7 +404,7 @@ li.new{animation:hl 1.2s ease-out}
         if(r.text===seenCode) seenCount++; else { seenCode=r.text; seenCount=1; }
         lastSeenAt=t;
         // Debe leerse igual 2 veces seguidas, y no se repite mientras siga en el recuadro
-        if(seenCount>=2 && r.text!==inViewCode){
+        if(seenCount>=(WEAK.has(r.key)?3:2) && r.text!==inViewCode){
           inViewCode=r.text;
           if(mode==='tap'){ armedUntil=0; setArmed(false); }
           addCode(r.text, r.format);
@@ -432,6 +498,7 @@ li.new{animation:hl 1.2s ease-out}
     toast(mode==='auto' ? 'Automático: lee cada código nuevo que entre al recuadro.' : 'Al tocar: lee un código cada vez que tocas Escanear.');
   };
   applyMode();
+  renderFormats();
   $('toggleBtn').onclick=()=>{
     if(!running){ beepUnlock(); startCamera(); return; }
     paused=!paused;
@@ -452,12 +519,14 @@ li.new{animation:hl 1.2s ease-out}
       const det=await getDetector();
       if(det){
         const codes=await det.detect(img);
-        if(codes.length){ codes.forEach(c=>addCode(c.rawValue, prettyFormat(c.format))); return; }
+        const good=codes.map(c=>checkRead(c.rawValue,c.format)).filter(Boolean);
+        if(good.length){ good.forEach(g=>addCode(g.text, g.format)); return; }
       } else {
         const ZX=await loadZXing();
         const r=new ZX.BrowserMultiFormatReader();
         const res=await r.decodeFromImageElement(img).catch(()=>null);
-        if(res){ addCode(res.getText(), prettyFormat(ZX.BarcodeFormat[res.getBarcodeFormat()])); return; }
+        const g=res && checkRead(res.getText(), ZX.BarcodeFormat[res.getBarcodeFormat()]);
+        if(g){ addCode(g.text, g.format); return; }
       }
       toast('No se encontró un código en la foto. Prueba más cerca y con buena luz.');
     }catch(e){ toast('No se pudo leer la foto.'); }
